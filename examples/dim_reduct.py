@@ -6,8 +6,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from nca import NCA
+from torchnca import NCA
 from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def make_circle(r, num_samples):
@@ -18,7 +21,7 @@ def make_circle(r, num_samples):
   return x, y
 
 
-def gen_data(num_samples, num_classes, mean, std, device):
+def gen_data(num_samples, num_classes, mean, std):
   """Generates the data.
   """
   num_samples_per = num_samples // num_classes
@@ -42,13 +45,13 @@ def gen_data(num_samples, num_classes, mean, std, device):
 
 
 def plot(Xs, y, labels, save=None):
-  fig, axes = plt.subplots(1, len(labels), figsize=(8, 4))
+  fig, axes = plt.subplots(1, len(labels), figsize=(18, 4))
   for ax, X, lab in zip(axes, Xs, labels):
     ax.scatter(X[:, 0], X[:, 1], c=y, cmap=plt.cm.Spectral)
     ax.title.set_text(lab)
   if save is not None:
-    plt.savefig("./assets/{}".format(save), format="png", dpi=300)
-    plt.tight_layout()
+    filename = "./assets/{}".format(save)
+    plt.savefig(filename, format="png", dpi=300, bbox_inches='tight')
   plt.show()
 
 
@@ -62,30 +65,33 @@ def main(args):
     torch.manual_seed(args.seed)
     device = torch.device("cpu")
 
-  num_samples = 300
-  X, y = gen_data(num_samples, 5, 0, args.sigma, device)
-  print(X.shape)
+  num_samples = 500
+  X, y = gen_data(num_samples, 5, 0, args.sigma)
+  print("data", X.shape)
 
   # plot first two dimensions of original data
   plt.scatter(X[:, 0], X[:, 1], c=y, cmap=plt.cm.Spectral)
   plt.show()
 
   # fit PCA
-  pca = PCA(n_components=2)
-  pca.fit(X)
-  X_pca = pca.transform(X)
+  pipeline = Pipeline([('scaling', StandardScaler()), ('pca', PCA(n_components=2))])
+  X_pca = pipeline.fit_transform(X)
+
+  # fit LDA
+  X_lda = LinearDiscriminantAnalysis(n_components=2).fit_transform(X, y)
 
   # fit NCA
   X = torch.from_numpy(X).float().to(device)
   y = torch.from_numpy(y).long().to(device)
   nca = NCA(dim=2, init=args.init, max_iters=1000, tol=1e-5)
-  nca.train(X, y, batch_size=None, weight_decay=30)
+  nca.train(X, y, batch_size=None, weight_decay=20)
   X_nca = nca(X).detach().cpu().numpy()
-  
+
   # plot PCA vs NCA
   y = y.detach().cpu().numpy()
-  plot([X_nca, X_pca], y, ["nca", "pca"])
-  
+  X = X.detach().cpu().numpy()
+  plot([X, X_nca, X_pca, X_lda], y, ["original", "torchnca", "pca", "lda"])
+
   A = nca.A.detach().cpu().numpy()
   print("\nSolution: \n", A)
 

@@ -1,6 +1,3 @@
-"""A pytorch implementation of NCA.
-"""
-
 import numpy as np
 import torch
 
@@ -37,10 +34,13 @@ class NCA:
     self.tol = tol
     self._mean = None
     self._stddev = None
+    self._losses = None
 
   def __call__(self, X):
     """Apply the learned linear map to the input.
     """
+    if self._mean is not None and self._stddev is not None:
+      X = (X - self._mean) / self._stddev
     return torch.mm(X, torch.t(self.A))
 
   def _init_transformation(self):
@@ -49,11 +49,11 @@ class NCA:
     if self.dim is None:
       self.dim = self.num_dims
     if self.init == "random":
-      a = torch.randn(self.dim, self.num_dims) * 0.01
-      self.A = torch.nn.Parameter(a).to(self.device)
+      a = torch.randn(self.dim, self.num_dims, device=self.device) * 0.01
+      self.A = torch.nn.Parameter(a)
     elif self.init == "identity":
-      a = torch.eye(self.dim, self.num_dims)
-      self.A = torch.nn.Parameter(a).to(self.device)
+      a = torch.eye(self.dim, self.num_dims, device=self.device)
+      self.A = torch.nn.Parameter(a)
     else:
       raise ValueError("[!] {} initialization is not supported.".format(self.init))
 
@@ -91,6 +91,12 @@ class NCA:
       raise ValueError('No stddev was computed. Make sure normalize is set to True.')
     return self._stddev
 
+  @property
+  def losses(self):
+    if self._losses is None:
+      raise ValueError('There are no losses to report. You must call train first.')
+    return self._losses
+
   def loss(self, X, y_mask):
     # compute pairwise squared Euclidean distances
     # in transformed space
@@ -125,7 +131,7 @@ class NCA:
     # a minimizer
     # for numerical stability, we only
     # log_sum over non-zero values
-    classification_loss = -torch.log(torch.masked_select(p_i, p_i!=0)).sum()
+    classification_loss = -torch.log(torch.masked_select(p_i, p_i != 0)).sum()
 
     # to prevent the embeddings of different
     # classes from collapsing to the same
@@ -139,7 +145,16 @@ class NCA:
     loss = classification_loss + hinge_loss
     return loss
 
-  def train(self, X, y, batch_size=None, lr=1e-4, weight_decay=5, normalize=True):
+  def train(
+    self,
+    X,
+    y,
+    batch_size=None,
+    lr=1e-4,
+    momentum=0.9,
+    weight_decay=10,
+    normalize=True,
+  ):
     """Trains NCA until convergence.
 
     Specifically, we maximize the expected number of points
@@ -148,10 +163,10 @@ class NCA:
     in the transformed space.
 
     Args:
-      X (ndarray): The dataset of shape (N, D) where
+      X (torch.FloatTensor): The dataset of shape (N, D) where
         `D` is the dimension of the feature space and `N`
         is the number of training examples.
-      y (ndarray): The class labels of shape (N,).
+      y (torch.LongTensor): The class labels of shape (N,).
       batch_size (int): How many data samples to use in an SGD
         update step.
       lr (float): The learning rate.
@@ -161,6 +176,7 @@ class NCA:
         subtract the feature-wise mean and divide by the
         feature-wise standard deviation.
     """
+    self._losses = []
     self.num_train, self.num_dims = X.shape
     self.device = torch.device("cuda" if X.is_cuda else "cpu")
     if batch_size is None:
@@ -179,7 +195,7 @@ class NCA:
     optim_args = {
       'lr': lr,
       'weight_decay': weight_decay,
-      'momentum': 0.9,
+      'momentum': momentum,
     }
     optimizer = torch.optim.SGD([self.A], **optim_args)
     iters_per_epoch = int(np.ceil(self.num_train / batch_size))
@@ -200,6 +216,7 @@ class NCA:
         # compute loss and take gradient step
         optimizer.zero_grad()
         loss = self.loss(X_batch, y_mask)
+        self._losses.append(loss.item())
         loss.backward()
         optimizer.step()
 
